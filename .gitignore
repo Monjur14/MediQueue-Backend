@@ -1,0 +1,71 @@
+# ========================
+# Dependencies
+# ========================
+node_modules/
+.pnp
+.pnp.js
+
+# ========================
+# Environment & Secrets
+# ========================
+.env
+.env.local
+.env.development
+.env.production
+.env.test
+
+# ========================
+# Build output
+# ========================
+dist/
+build/
+out/
+
+# ========================
+# TypeScript
+# ========================
+*.tsbuildinfo
+
+# ========================
+# Logs
+# ========================
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ========================
+# OS files
+# ========================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ========================
+# Editor / IDE
+# ========================
+.vscode/
+.idea/
+*.swp
+*.swo
+*.suo
+.kilo
+
+# ========================
+# Testing
+# ========================
+coverage/
+.nyc_output/
+
+# ========================
+# Docker
+# ========================
+.docker/
+
+# ========================
+# Misc
+# ========================
+*.pem
+*.key
+*.cert
