@@ -9,6 +9,7 @@ import patientsRouter from './modules/patients/patients.routes.js';
 import doctorsRouter from './modules/doctors/doctors.routes.js';
 import departmentsRouter from './modules/departments/departments.routes.js';
 import clinicsRouter from './modules/clinics/clinics.routes.js';
+import queueRouter from './modules/queue/queue.routes.js';
 
 const app = express();
 
@@ -31,6 +32,7 @@ app.use('/api/patients', patientsRouter);
 app.use('/api/doctors', doctorsRouter);
 app.use('/api/departments', departmentsRouter);
 app.use('/api/clinics', clinicsRouter);
+app.use('/api/queue', queueRouter);
 
 // This should palaced last
 app.use('/api', departmentsRouter); // For handle Public routes
