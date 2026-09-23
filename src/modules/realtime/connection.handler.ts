@@ -1,35 +1,39 @@
 import type { Socket } from 'socket.io';
-import { jwtUtil } from '../../utils/jwt.js';
+import { jwtUtil }     from '../../utils/jwt.js';
 
 export const handleConnection = (socket: Socket) => {
   console.log(`🔌 Client connected: ${socket.id}`);
 
-  // join a queue session room
-  // client sends: socket.emit('join:session', { sessionId, token? })
-  socket.on('join:session', async (data: { sessionId: string; token?: string }) => {
+  socket.on('join:session', async (data: {
+    sessionId: string;
+    token?:    string;
+  }) => {
     const room = `session:${data.sessionId}`;
     socket.join(room);
     console.log(`📺 Client ${socket.id} joined room: ${room}`);
 
-    // if token provided → verify and attach user
+    // if token provided → verify and join personal room
     if (data.token) {
       try {
         const decoded = jwtUtil.verifyAccessToken(data.token);
         socket.data.user = decoded;
-        console.log(`👤 Authenticated user in room: ${decoded.userId}`);
+
+        // join personal room for targeted ETA updates
+        const personalRoom = `patient:${decoded.userId}`;
+        socket.join(personalRoom);
+        console.log(`👤 Patient joined personal room: ${personalRoom}`);
+
       } catch {
         console.log(`⚠️ Invalid token — joined as anonymous`);
       }
     }
 
-    // confirm join
     socket.emit('joined:session', {
       sessionId: data.sessionId,
-      message: 'Successfully joined queue session',
+      message:   'Successfully joined queue session',
     });
   });
 
-  // leave a session room
   socket.on('leave:session', (data: { sessionId: string }) => {
     const room = `session:${data.sessionId}`;
     socket.leave(room);

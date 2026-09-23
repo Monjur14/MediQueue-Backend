@@ -6,6 +6,7 @@ import { pool } from './config/database.js';
 import { redis } from './config/redis.js';
 import { initSocketServer } from './modules/realtime/socket.server.js';
 import { initQueueGateway } from './modules/realtime/queue.gateway.js';
+import { startAllWorkers } from './workers/index.js';
 
 const PORT = process.env.PORT || 5001;
 
@@ -24,6 +25,9 @@ const start = async () => {
 
     // init queue gateway (Redis Pub/Sub → Socket.io bridge)
     await initQueueGateway();
+
+    // start background workers
+    startAllWorkers();
 
     // start server
     httpServer.listen(PORT, () => {
