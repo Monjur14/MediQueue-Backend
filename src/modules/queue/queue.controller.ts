@@ -200,4 +200,17 @@ export const queueController = {
             return res.status(500).json({ message: 'Internal server error' });
         }
     },
+    async checkinToken(req: Request, res: Response) {
+        try {
+            const tokenId = req.params['id'] as string;
+            const sessionId = req.body.session_id;
+            const token = await queueService.checkinToken(tokenId, sessionId);
+            return res.status(200).json({ token });
+        } catch (err: any) {
+            if (err.message === 'TOKEN_NOT_FOUND') {
+                return res.status(404).json({ message: 'Token not found or not in called status' });
+            }
+            return res.status(500).json({ message: 'Internal server error' });
+        }
+    },
 };

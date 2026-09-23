@@ -215,43 +215,58 @@ export const departmentsRepository = {
         return result.rows;
     },
     async findTenantBySlug(slug: string) {
-        const result = await pool.query(
-            `SELECT id, name, slug FROM tenants
-     WHERE slug = $1
-     AND deleted_at IS NULL
-     AND is_active = TRUE`,
-            [slug]
-        );
-        return result.rows[0] ?? null;
+        const client = await pool.connect();
+        try {
+            await client.query(`SET LOCAL app.current_user_role  = 'public'`);
+            const result = await client.query(
+                `SELECT id, name, slug FROM tenants
+       WHERE slug = $1
+       AND deleted_at IS NULL
+       AND is_active = TRUE`,
+                [slug]
+            );
+            return result.rows[0] ?? null;
+        } finally {
+            client.release();
+        }
     },
 
     async getPublicDepartments(tenantId: string) {
-        const result = await pool.query(
-            `SELECT id, name, description
-     FROM departments
-     WHERE tenant_id = $1
-     AND is_active = TRUE
-     AND deleted_at IS NULL
-     ORDER BY created_at ASC`,
-            [tenantId]
-        );
-        return result.rows;
+        const client = await pool.connect();
+        try {
+            await client.query(`SET LOCAL app.current_user_role  = 'public'`);
+            const result = await client.query(
+                `SELECT id, name, description
+       FROM departments
+       WHERE tenant_id = $1
+       AND is_active = TRUE
+       AND deleted_at IS NULL
+       ORDER BY created_at ASC`,
+                [tenantId]
+            );
+            return result.rows;
+        } finally {
+            client.release();
+        }
     },
 
     async getPublicDoctorsInDepartment(departmentId: string) {
-        const result = await pool.query(
-            `SELECT
-      u.id,
-      u.full_name,
-      u.phone
-     FROM department_doctors dd
-     INNER JOIN users u ON u.id = dd.doctor_id
-     WHERE dd.department_id = $1
-     AND u.deleted_at IS NULL
-     AND u.is_active = TRUE
-     AND u.status = 'active'`,
-            [departmentId]
-        );
-        return result.rows;
+        const client = await pool.connect();
+        try {
+            await client.query(`SET LOCAL app.current_user_role  = 'public'`);
+            const result = await client.query(
+                `SELECT u.id, u.full_name, u.phone
+       FROM department_doctors dd
+       INNER JOIN users u ON u.id = dd.doctor_id
+       WHERE dd.department_id = $1
+       AND u.deleted_at IS NULL
+       AND u.is_active = TRUE
+       AND u.status = 'active'`,
+                [departmentId]
+            );
+            return result.rows;
+        } finally {
+            client.release();
+        }
     },
 };

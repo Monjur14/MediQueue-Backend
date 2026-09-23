@@ -6,11 +6,11 @@ export const queueRepository = {
   // ─── SESSION ─────────────────────────────────────────────
 
   async openSession(data: {
-    tenant_id:     string;
-    doctor_id:     string;
+    tenant_id: string;
+    doctor_id: string;
     department_id: string;
-    session_date:  string;
-    max_tokens:    number;
+    session_date: string;
+    max_tokens: number;
   }) {
     const result = await pool.query(
       `INSERT INTO queue_sessions
@@ -64,9 +64,9 @@ export const queueRepository = {
   // ─── GIVE TOKEN (with SELECT FOR UPDATE) ─────────────────
 
   async giveToken(data: {
-    session_id:  string;
-    patient_id:  string;
-    fee_amount:  number;
+    session_id: string;
+    patient_id: string;
+    fee_amount: number;
   }) {
     const client = await pool.connect();
 
@@ -261,8 +261,8 @@ export const queueRepository = {
   // ─── DOCTOR BREAK ────────────────────────────────────────
 
   async startBreak(data: {
-    session_id:        string;
-    doctor_id:         string;
+    session_id: string;
+    doctor_id: string;
     expected_duration: number;
   }) {
     const result = await pool.query(
@@ -289,23 +289,29 @@ export const queueRepository = {
   // ─── QUEUE STATUS (public) ────────────────────────────────
 
   async getSessionStatus(sessionId: string) {
-    const result = await pool.query(
-      `SELECT
+    const client = await pool.connect();
+    try {
+      await client.query(`SET LOCAL app.current_user_role  = 'public'`);
+      const result = await client.query(
+        `SELECT
         qs.*,
         u.full_name  AS doctor_name,
         d.name       AS department_name,
-        COUNT(qt.id) FILTER (WHERE qt.status = 'waiting')      AS waiting_count,
-        COUNT(qt.id) FILTER (WHERE qt.status = 'completed')    AS completed_count,
-        COUNT(qt.id) FILTER (WHERE qt.status = 'skipped')      AS skipped_count
+        COUNT(qt.id) FILTER (WHERE qt.status = 'waiting')   AS waiting_count,
+        COUNT(qt.id) FILTER (WHERE qt.status = 'completed') AS completed_count,
+        COUNT(qt.id) FILTER (WHERE qt.status = 'skipped')   AS skipped_count
        FROM queue_sessions qs
        INNER JOIN users u        ON u.id = qs.doctor_id
        INNER JOIN departments d  ON d.id = qs.department_id
        LEFT  JOIN queue_tokens qt ON qt.session_id = qs.id
        WHERE qs.id = $1
        GROUP BY qs.id, u.full_name, d.name`,
-      [sessionId]
-    );
-    return result.rows[0] ?? null;
+        [sessionId]
+      );
+      return result.rows[0] ?? null;
+    } finally {
+      client.release();
+    }
   },
 
   async getTodaySessionsByTenant(tenantId: string) {
@@ -367,5 +373,75 @@ export const queueRepository = {
       [phone]
     );
     return result.rows[0] ?? null;
+  },
+  async checkinToken(tokenId: string) {
+    const result = await pool.query(
+      `UPDATE queue_tokens
+     SET status     = 'in_consultation',
+         updated_at = NOW()
+     WHERE id = $1
+     AND status = 'called'
+     RETURNING *`,
+      [tokenId]
+    );
+    return result.rows[0] ?? null;
+  },
+  async getAvgConsultationTime(sessionId: string) {
+    const result = await pool.query(
+      `SELECT
+      AVG(
+        EXTRACT(EPOCH FROM (completed_at - called_at)) / 60
+      ) AS avg_minutes,
+      COUNT(*) AS total_completed
+     FROM queue_tokens
+     WHERE session_id  = $1
+     AND status        = 'completed'
+     AND called_at     IS NOT NULL
+     AND completed_at  IS NOT NULL`,
+      [sessionId]
+    );
+
+    const row = result.rows[0];
+
+    // need at least 3 completed tokens for reliable average
+    if (!row || parseInt(row.total_completed) < 3) {
+      return null; // use default
+    }
+
+    return parseFloat(row.avg_minutes);
+  },
+
+  async getWaitingTokens(sessionId: string) {
+    const result = await pool.query(
+      `SELECT token_number, patient_id
+     FROM queue_tokens
+     WHERE session_id = $1
+     AND status       = 'waiting'
+     ORDER BY token_number ASC`,
+      [sessionId]
+    );
+    return result.rows;
+  },
+
+  async getActiveBreak(sessionId: string) {
+    const result = await pool.query(
+      `SELECT
+      expected_duration,
+      EXTRACT(EPOCH FROM (NOW() - started_at)) / 60 AS elapsed_minutes
+     FROM doctor_breaks
+     WHERE session_id = $1
+     AND ended_at     IS NULL
+     ORDER BY started_at DESC
+     LIMIT 1`,
+      [sessionId]
+    );
+
+    if (!result.rows[0]) return null;
+
+    const row = result.rows[0];
+    const elapsed = parseFloat(row.elapsed_minutes);
+    const remaining = Math.max(0, row.expected_duration - elapsed);
+
+    return Math.round(remaining);
   },
 };

@@ -1,5 +1,8 @@
-import { queueRepository }  from './queue.repository.js';
-import { redis }            from '../../config/redis.js';
+import { queueRepository } from './queue.repository.js';
+import { redis } from '../../config/redis.js';
+import { noShowQueue } from '../../config/bullmq.js';
+import { pool } from '../../config/database.js';
+import { calculateETAs } from '../../utils/eta.js';
 import type {
   OpenSessionInput,
   GiveTokenInput,
@@ -8,28 +11,55 @@ import type {
   UpdateNotesInput,
 } from './queue.schema.js';
 
-export const queueService = {
+// ─── STANDALONE ETA RECALCULATOR ─────────────────────────────
+// extracted outside queueService so it can be called internally
 
-  // ─── OPEN SESSION ─────────────────────────────────────────
+const recalculateETAs = async (sessionId: string) => {
+  const [waitingTokens, avgTime, breakTimeRemaining] = await Promise.all([
+    queueRepository.getWaitingTokens(sessionId),
+    queueRepository.getAvgConsultationTime(sessionId),
+    queueRepository.getActiveBreak(sessionId),
+  ]);
+
+  const etas = calculateETAs(
+    waitingTokens,
+    avgTime,
+    breakTimeRemaining ?? 0,
+  );
+
+  await redis.publish(
+    `queue:${sessionId}`,
+    JSON.stringify({
+      event: 'eta_update',
+      session_id: sessionId,
+      etas,
+      avg_consultation_time: avgTime ?? 10,
+      waiting_count: waitingTokens.length,
+    })
+  );
+
+  return etas;
+};
+
+// ─── QUEUE SERVICE ────────────────────────────────────────────
+
+export const queueService = {
 
   async openSession(tenantId: string, input: OpenSessionInput) {
     const session = await queueRepository.openSession({
-      tenant_id:     tenantId,
-      doctor_id:     input.doctor_id,
+      tenant_id: tenantId,
+      doctor_id: input.doctor_id,
       department_id: input.department_id,
-      session_date:  input.session_date,
-      max_tokens:    input.max_tokens,
+      session_date: input.session_date,
+      max_tokens: input.max_tokens,
     });
     return session;
   },
-
-  // ─── CLOSE SESSION ────────────────────────────────────────
 
   async closeSession(sessionId: string) {
     const session = await queueRepository.closeSession(sessionId);
     if (!session) throw new Error('SESSION_NOT_FOUND');
 
-    // publish to Redis → WebSocket clients will update
     await redis.publish(
       `queue:${sessionId}`,
       JSON.stringify({ event: 'session_closed', sessionId })
@@ -38,93 +68,116 @@ export const queueService = {
     return session;
   },
 
-  // ─── GIVE TOKEN (idempotency + race condition) ────────────
-
   async giveToken(tenantId: string, input: GiveTokenInput) {
-
-    // idempotency check — prevent double click
     const idempotencyKey = `idempotency:${input.idempotency_key}`;
     const cached = await redis.get(idempotencyKey);
-    if (cached) return JSON.parse(cached); // return same result
+    if (cached) return JSON.parse(cached);
 
-    // find patient by phone
     const patient = await queueRepository.findPatientByPhone(input.phone);
     if (!patient) throw new Error('PATIENT_NOT_FOUND');
 
-    // give token (SELECT FOR UPDATE inside)
     const token = await queueRepository.giveToken({
       session_id: input.session_id,
       patient_id: patient.id,
       fee_amount: input.fee_amount,
     });
 
-    // save idempotency result for 24 hours
     await redis.setex(idempotencyKey, 86400, JSON.stringify(token));
 
-    // publish to Redis → notify all waiting clients
     await redis.publish(
       `queue:${input.session_id}`,
       JSON.stringify({
-        event:           'token_issued',
-        session_id:      input.session_id,
-        token_number:    token.token_number,
-        total_issued:    token.token_number,
+        event: 'token_issued',
+        session_id: input.session_id,
+        token_number: token.token_number,
+        total_issued: token.token_number,
       })
     );
 
     return { token, patient };
   },
 
-  // ─── CALL NEXT TOKEN ──────────────────────────────────────
-
   async callNextToken(sessionId: string) {
     const token = await queueRepository.callNextToken(sessionId);
 
-    // publish to Redis → all clients update
+    const patientResult = await pool.query(
+      `SELECT phone FROM users WHERE id = $1`,
+      [token.patient_id]
+    );
+
+    await noShowQueue.add(
+      'check-noshow',
+      {
+        tokenId: token.id,
+        sessionId,
+        patientId: token.patient_id,
+        phone: patientResult.rows[0]?.phone ?? null,
+      },
+      {
+        delay: 5 * 60 * 1000,
+        jobId: `noshow-${token.id}`,
+        attempts: 3,
+      }
+    );
+
     await redis.publish(
       `queue:${sessionId}`,
       JSON.stringify({
-        event:        'token_called',
-        session_id:   sessionId,
+        event: 'token_called',
+        session_id: sessionId,
         token_number: token.token_number,
-        patient_id:   token.patient_id,
+        patient_id: token.patient_id,
+      })
+    );
+
+    await recalculateETAs(sessionId); // ← direct call now
+
+    return token;
+  },
+
+  async checkinToken(tokenId: string, sessionId: string) {
+    const token = await queueRepository.checkinToken(tokenId);
+    if (!token) throw new Error('TOKEN_NOT_FOUND');
+
+    await redis.publish(
+      `queue:${sessionId}`,
+      JSON.stringify({
+        event: 'token_checkin',
+        tokenId,
+        session_id: sessionId,
       })
     );
 
     return token;
   },
 
-  // ─── SKIP TOKEN ───────────────────────────────────────────
-
   async skipToken(tokenId: string, sessionId: string) {
     const token = await queueRepository.skipToken(tokenId);
     if (!token) throw new Error('TOKEN_NOT_FOUND');
 
-    // publish skip event
     await redis.publish(
       `queue:${sessionId}`,
       JSON.stringify({ event: 'token_skipped', tokenId })
     );
 
+    await recalculateETAs(sessionId); // ← direct call
+
     return token;
   },
-
-  // ─── COMPLETE TOKEN ───────────────────────────────────────
 
   async completeToken(tokenId: string, sessionId: string) {
     const token = await queueRepository.completeToken(tokenId);
     if (!token) throw new Error('TOKEN_NOT_FOUND');
 
-    // publish complete event
     await redis.publish(
       `queue:${sessionId}`,
       JSON.stringify({ event: 'token_completed', tokenId })
     );
 
+    await recalculateETAs(sessionId); // ← direct call
+
     return token;
   },
-
-  // ─── MARK FEE PAID ────────────────────────────────────────
 
   async markFeePaid(tokenId: string, input: MarkFeeInput) {
     const token = await queueRepository.markFeePaid(tokenId, input.fee_amount);
@@ -132,38 +185,33 @@ export const queueService = {
     return token;
   },
 
-  // ─── UPDATE NOTES (optimistic locking) ────────────────────
-
   async updateNotes(tokenId: string, input: UpdateNotesInput) {
     const token = await queueRepository.updateNotes(
       tokenId,
       input.notes,
       input.notes_version
     );
-
-    // null means version mismatch → conflict
     if (!token) throw new Error('VERSION_CONFLICT');
     return token;
   },
 
-  // ─── DOCTOR BREAK ─────────────────────────────────────────
-
   async startBreak(sessionId: string, doctorId: string, input: DoctorBreakInput) {
     const breakRecord = await queueRepository.startBreak({
-      session_id:        sessionId,
-      doctor_id:         doctorId,
+      session_id: sessionId,
+      doctor_id: doctorId,
       expected_duration: input.expected_duration,
     });
 
-    // publish break event → all clients see "Doctor on break"
     await redis.publish(
       `queue:${sessionId}`,
       JSON.stringify({
-        event:             'doctor_break_started',
-        session_id:        sessionId,
+        event: 'doctor_break_started',
+        session_id: sessionId,
         expected_duration: input.expected_duration,
       })
     );
+
+    await recalculateETAs(sessionId); // ← direct call
 
     return breakRecord;
   },
@@ -172,19 +220,18 @@ export const queueService = {
     const breakRecord = await queueRepository.endBreak(breakId);
     if (!breakRecord) throw new Error('BREAK_NOT_FOUND');
 
-    // publish break ended → queue resumes
     await redis.publish(
       `queue:${sessionId}`,
       JSON.stringify({
-        event:      'doctor_break_ended',
+        event: 'doctor_break_ended',
         session_id: sessionId,
       })
     );
 
+    await recalculateETAs(sessionId); // ← direct call
+
     return breakRecord;
   },
-
-  // ─── GET STATUS ───────────────────────────────────────────
 
   async getSessionStatus(sessionId: string) {
     const status = await queueRepository.getSessionStatus(sessionId);
@@ -201,4 +248,7 @@ export const queueService = {
     if (!token) throw new Error('TOKEN_NOT_FOUND');
     return token;
   },
+
+  // expose recalculateETAs publicly so noShow worker can call it
+  recalculateETAs,
 };

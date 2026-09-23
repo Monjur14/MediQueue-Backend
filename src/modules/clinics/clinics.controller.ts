@@ -1,5 +1,5 @@
 import type { Request, Response } from 'express';
-import { clinicsService }         from './clinics.service.js';
+import { clinicsService } from './clinics.service.js';
 
 export const clinicsController = {
 
@@ -14,6 +14,7 @@ export const clinicsController = {
       const clinics = await clinicsService.searchClinics(search);
       return res.status(200).json({ clinics });
     } catch (err: any) {
+      console.error('CLINICS SEARCH ERROR:', err); // ← add here
       if (err.message === 'SEARCH_TOO_SHORT') {
         return res.status(400).json({ message: 'Search must be at least 2 characters' });
       }
