@@ -23,6 +23,11 @@ export const queueController = {
             const session = await queueService.openSession(tenantId, parsed.data);
             return res.status(201).json({ session });
         } catch (err: any) {
+            if (err.code === '23505' || err.message === 'SESSION_ALREADY_EXISTS') {
+                return res.status(409).json({
+                    message: 'A session already exists for today. Close it first before opening a new one.',
+                });
+            }
             console.error('OPEN SESSION ERROR:', err);
             return res.status(500).json({ message: 'Internal server error' });
         }
@@ -213,4 +218,40 @@ export const queueController = {
             return res.status(500).json({ message: 'Internal server error' });
         }
     },
+
+
+    async getSessionTokens(req: Request, res: Response) {
+        try {
+            const sessionId = req.params['id'] as string;
+            const tokens = await queueService.getSessionTokens(sessionId);
+            return res.status(200).json({ tokens });
+        } catch {
+            return res.status(500).json({ message: 'Internal server error' });
+        }
+    },
+
+    async getMyActiveToken(req: Request, res: Response) {
+        try {
+            const patientId = req.user!.id;
+            const token = await queueService.getMyActiveToken(patientId);
+            if (!token) return res.status(404).json({ message: 'No active token today' });
+            return res.status(200).json({ token });
+        } catch {
+            return res.status(500).json({ message: 'Internal server error' });
+        }
+    },
+
+    async reopenSession(req: Request, res: Response) {
+        try {
+            const sessionId = req.params['id'] as string;
+            const session = await queueService.reopenSession(sessionId);
+            return res.status(200).json({ session });
+        } catch (err: any) {
+            if (err.message === 'SESSION_NOT_FOUND') {
+                return res.status(404).json({ message: 'Session not found or not closed' });
+            }
+            return res.status(500).json({ message: 'Internal server error' });
+        }
+    },
+
 };

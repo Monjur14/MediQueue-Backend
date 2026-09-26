@@ -8,7 +8,7 @@ export const queueRepository = {
   async openSession(data: {
     tenant_id: string;
     doctor_id: string;
-    department_id: string;
+    department_id?: string;
     session_date: string;
     max_tokens: number;
   }) {
@@ -20,7 +20,7 @@ export const queueRepository = {
       [
         data.tenant_id,
         data.doctor_id,
-        data.department_id,
+        data.department_id ?? null,
         data.session_date,
         data.max_tokens,
       ]
@@ -41,7 +41,7 @@ export const queueRepository = {
       `SELECT * FROM queue_sessions
        WHERE doctor_id = $1
        AND tenant_id = $2
-       AND session_date = CURRENT_DATE
+       AND session_date::date = CURRENT_DATE
        AND status = 'open'`,
       [doctorId, tenantId]
     );
@@ -265,25 +265,65 @@ export const queueRepository = {
     doctor_id: string;
     expected_duration: number;
   }) {
-    const result = await pool.query(
-      `INSERT INTO doctor_breaks
-        (session_id, doctor_id, expected_duration)
-       VALUES ($1, $2, $3)
-       RETURNING *`,
-      [data.session_id, data.doctor_id, data.expected_duration]
-    );
-    return result.rows[0];
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // Update session status to 'break'
+      await client.query(
+        `UPDATE queue_sessions SET status = 'break', updated_at = NOW() WHERE id = $1`,
+        [data.session_id]
+      );
+
+      const result = await client.query(
+        `INSERT INTO doctor_breaks
+          (session_id, doctor_id, expected_duration)
+         VALUES ($1, $2, $3)
+         RETURNING *`,
+        [data.session_id, data.doctor_id, data.expected_duration]
+      );
+
+      await client.query('COMMIT');
+      return result.rows[0];
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
   },
 
   async endBreak(breakId: string) {
-    const result = await pool.query(
-      `UPDATE doctor_breaks
-       SET ended_at = NOW()
-       WHERE id = $1
-       RETURNING *`,
-      [breakId]
-    );
-    return result.rows[0] ?? null;
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const result = await client.query(
+        `UPDATE doctor_breaks
+         SET ended_at = NOW()
+         WHERE id = $1
+         RETURNING *`,
+        [breakId]
+      );
+
+      const breakRecord = result.rows[0] ?? null;
+
+      // Reset session status back to 'open'
+      if (breakRecord) {
+        await client.query(
+          `UPDATE queue_sessions SET status = 'open', updated_at = NOW() WHERE id = $1`,
+          [breakRecord.session_id]
+        );
+      }
+
+      await client.query('COMMIT');
+      return breakRecord;
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
   },
 
   // ─── QUEUE STATUS (public) ────────────────────────────────
@@ -323,18 +363,31 @@ export const queueRepository = {
         qs.current_token,
         qs.total_issued,
         qs.session_date,
-        u.full_name  AS doctor_name,
-        d.name       AS department_name,
-        COUNT(qt.id) FILTER (WHERE qt.status = 'waiting')   AS waiting_count,
-        (qs.max_tokens - qs.total_issued)                    AS remaining_tokens
+        qs.doctor_id,
+        u.full_name        AS doctor_name,
+        qs.department_id,
+        d.name             AS department_name,
+        COUNT(qt.id) FILTER (WHERE qt.status = 'waiting')        AS waiting_count,
+        COUNT(qt.id) FILTER (WHERE qt.status = 'completed')      AS completed_count,
+        COUNT(qt.id) FILTER (WHERE qt.status = 'skipped')        AS skipped_count,
+        (qs.max_tokens - qs.total_issued)                        AS remaining_tokens,
+        (SELECT db.id FROM doctor_breaks db
+          WHERE db.session_id = qs.id AND db.ended_at IS NULL
+          LIMIT 1)                                                AS active_break_id,
+        (SELECT db.started_at FROM doctor_breaks db
+          WHERE db.session_id = qs.id AND db.ended_at IS NULL
+          LIMIT 1)                                                AS break_started_at,
+        (SELECT db.expected_duration FROM doctor_breaks db
+          WHERE db.session_id = qs.id AND db.ended_at IS NULL
+          LIMIT 1)                                                AS break_expected_duration
        FROM queue_sessions qs
        INNER JOIN users u         ON u.id = qs.doctor_id
-       INNER JOIN departments d   ON d.id = qs.department_id
+       LEFT  JOIN departments d   ON d.id = qs.department_id
        LEFT  JOIN queue_tokens qt ON qt.session_id = qs.id
        WHERE qs.tenant_id   = $1
-       AND qs.session_date  = CURRENT_DATE
+       AND qs.session_date::date = CURRENT_DATE
        GROUP BY qs.id, u.full_name, d.name
-       ORDER BY d.name ASC`,
+       ORDER BY qs.opened_at ASC`,
       [tenantId]
     );
     return result.rows;
@@ -444,4 +497,89 @@ export const queueRepository = {
 
     return Math.round(remaining);
   },
+
+  // ─── SESSION TOKENS LIST (doctor view) ───────────────────
+
+  async getSessionTokens(sessionId: string) {
+    const result = await pool.query(
+      `SELECT
+        qt.id,
+        qt.token_number,
+        qt.status,
+        qt.fee_paid,
+        qt.fee_amount,
+        qt.called_at,
+        qt.completed_at,
+        qt.created_at,
+        u.full_name AS patient_name,
+        u.phone     AS patient_phone
+       FROM queue_tokens qt
+       INNER JOIN users u ON u.id = qt.patient_id
+       WHERE qt.session_id = $1
+       ORDER BY qt.token_number ASC`,
+      [sessionId]
+    );
+    return result.rows;
+  },
+
+  // ─── MY ACTIVE TOKEN (patient, no session ID needed) ─────────
+
+  async getMyActiveToken(patientId: string) {
+    const result = await pool.query(
+      `SELECT
+        qt.id,
+        qt.token_number                                         AS my_token,
+        qt.status,
+        qt.fee_paid,
+        qt.fee_amount,
+        qt.created_at,
+        qs.id                                                   AS session_id,
+        qs.current_token,
+        qs.status                                               AS session_status,
+        u.full_name                                             AS doctor_name,
+        d.name                                                  AS department_name,
+        t.name                                                  AS clinic_name,
+        COUNT(ahead.id)                                         AS patients_ahead,
+        (SELECT db.started_at FROM doctor_breaks db
+          WHERE db.session_id = qs.id AND db.ended_at IS NULL
+          LIMIT 1)                                              AS break_started_at,
+        (SELECT db.expected_duration FROM doctor_breaks db
+          WHERE db.session_id = qs.id AND db.ended_at IS NULL
+          LIMIT 1)                                              AS break_expected_duration
+       FROM queue_tokens qt
+       INNER JOIN queue_sessions qs  ON qs.id  = qt.session_id
+       INNER JOIN users u            ON u.id   = qs.doctor_id
+       LEFT  JOIN departments d      ON d.id   = qs.department_id
+       INNER JOIN tenants t          ON t.id   = qs.tenant_id
+       LEFT  JOIN queue_tokens ahead
+         ON ahead.session_id   = qt.session_id
+         AND ahead.status      = 'waiting'
+         AND ahead.token_number < qt.token_number
+       WHERE qt.patient_id  = $1
+       AND qs.session_date::date = CURRENT_DATE
+       AND qt.status NOT IN ('completed', 'skipped')
+       GROUP BY qt.id, qs.id, qs.current_token, qs.status, u.full_name, d.name, t.name
+       ORDER BY qt.created_at DESC
+       LIMIT 1`,
+      [patientId]
+    );
+    return result.rows[0] ?? null;
+  },
+
+  // ─── REOPEN SESSION ──────────────────────────────────────
+
+  async reopenSession(sessionId: string) {
+    const result = await pool.query(
+      `UPDATE queue_sessions
+       SET status     = 'open',
+           closed_at  = NULL,
+           updated_at = NOW()
+       WHERE id = $1
+       AND status = 'closed'
+       RETURNING *`,
+      [sessionId]
+    );
+    return result.rows[0] ?? null;
+  },
+
 };

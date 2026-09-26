@@ -12,6 +12,12 @@ router.post(
   requireRole("tenant_admin"),
   tenantsController.inviteDoctor,
 );
+router.get(
+  "/me",
+  authenticate,
+  requireRole("tenant_admin"),
+  tenantsController.getMe,
+);
 router.put(
   "/me",
   authenticate,

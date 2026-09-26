@@ -11,6 +11,7 @@ import departmentsRouter from './modules/departments/departments.routes.js';
 import clinicsRouter from './modules/clinics/clinics.routes.js';
 import queueRouter from './modules/queue/queue.routes.js';
 import { resolveTenant } from './middleware/resolveTenant.js';
+import { rateLimiter } from './middleware/rateLimiter.js';
 
 const app = express();
 
@@ -19,6 +20,7 @@ app.use(cors());
 app.use(helmet());
 app.use(express.json());
 app.use(resolveTenant);
+app.use(rateLimiter);
 
 app.get("/", (req, res) => {
   res.json({ message: "MediQueue API" });

@@ -28,11 +28,19 @@ export const departmentsRepository = {
 
     async findAll(tenantId: string) {
         const result = await pool.query(
-            `SELECT id, name, description, is_active, created_at
-       FROM departments
-       WHERE tenant_id = $1
-       AND deleted_at IS NULL
-       ORDER BY created_at ASC`,
+            `SELECT
+               d.id,
+               d.name,
+               d.description,
+               d.is_active,
+               d.created_at,
+               COUNT(dd.doctor_id)::int AS total_doctors
+             FROM departments d
+             LEFT JOIN department_doctors dd ON dd.department_id = d.id
+             WHERE d.tenant_id = $1
+             AND d.deleted_at IS NULL
+             GROUP BY d.id
+             ORDER BY d.created_at ASC`,
             [tenantId]
         );
         return result.rows;

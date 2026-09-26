@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 export const openSessionSchema = z.object({
   doctor_id:     z.string().uuid(),
-  department_id: z.string().uuid(),
+  department_id: z.string().uuid().optional(),
   max_tokens:    z.number().int().min(1).max(500),
   session_date:  z.string().regex(/^\d{4}-\d{2}-\d{2}$/), // YYYY-MM-DD
 });

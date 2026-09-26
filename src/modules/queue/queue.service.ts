@@ -157,7 +157,7 @@ export const queueService = {
 
     await redis.publish(
       `queue:${sessionId}`,
-      JSON.stringify({ event: 'token_skipped', tokenId })
+      JSON.stringify({ event: 'token_skipped', tokenId, patient_id: token.patient_id })
     );
 
     await recalculateETAs(sessionId); // ← direct call
@@ -247,6 +247,29 @@ export const queueService = {
     const token = await queueRepository.getPatientToken(sessionId, patientId);
     if (!token) throw new Error('TOKEN_NOT_FOUND');
     return token;
+  },
+
+
+
+  async getSessionTokens(sessionId: string) {
+    return queueRepository.getSessionTokens(sessionId);
+  },
+
+  async getMyActiveToken(patientId: string) {
+    return queueRepository.getMyActiveToken(patientId);
+  },
+
+
+  async reopenSession(sessionId: string) {
+    const session = await queueRepository.reopenSession(sessionId);
+    if (!session) throw new Error('SESSION_NOT_FOUND');
+
+    await redis.publish(
+      `queue:${sessionId}`,
+      JSON.stringify({ event: 'session_reopened', sessionId })
+    );
+
+    return session;
   },
 
   // expose recalculateETAs publicly so noShow worker can call it

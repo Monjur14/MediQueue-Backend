@@ -107,5 +107,18 @@ export const tenantsController = {
       }
       return res.status(500).json({ message: 'Internal server error' });
     }
-  }
+  },
+
+  async getMe(req: Request, res: Response) {
+    try {
+      const tenantId = req.user!.tenantId!;
+      const tenant = await tenantsService.getMe(tenantId);
+      return res.status(200).json({ tenant });
+    } catch (err: any) {
+      if (err.message === "TENANT_NOT_FOUND") {
+        return res.status(404).json({ message: "Tenant not found" });
+      }
+      return res.status(500).json({ message: "Internal server error" });
+    }
+  },
 };

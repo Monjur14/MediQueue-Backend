@@ -179,4 +179,23 @@ export const tenantsRepository = {
     );
     return result.rows[0] ?? null;
   },
+
+  async getMe(tenantId: string) {
+    const result = await pool.query(
+      `SELECT
+         t.id, t.name, t.email, t.phone, t.logo_url, t.slug, t.updated_at,
+         sp.name          AS plan_name,
+         sp.max_doctors,
+         sp.max_departments,
+         sp.max_daily_patients
+       FROM tenants t
+       LEFT JOIN subscriptions s
+         ON s.tenant_id = t.id AND s.status IN ('active','pending')
+       LEFT JOIN subscription_plans sp ON sp.id = s.plan_id
+       WHERE t.id = $1 AND t.deleted_at IS NULL
+       LIMIT 1`,
+      [tenantId],
+    );
+    return result.rows[0] ?? null;
+  },
 };

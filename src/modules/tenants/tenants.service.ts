@@ -90,5 +90,11 @@ export const tenantsService = {
     if (!doctor) throw new Error('DOCTOR_NOT_FOUND');
 
     return doctor;
-  }
+  },
+
+  async getMe(tenantId: string) {
+    const row = await tenantsRepository.getMe(tenantId);
+    if (!row) throw new Error("TENANT_NOT_FOUND");
+    return row;
+  },
 };

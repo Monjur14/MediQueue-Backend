@@ -23,6 +23,9 @@ export const authController = {
       if (err.message === "EMAIL_TAKEN") {
         return res.status(409).json({ message: "Email already in use" });
       }
+      if (err.message === "PHONE_TAKEN") {
+        return res.status(409).json({ message: "Phone number already registered" });
+      }
       return res.status(500).json({ message: "Internal server error" });
     }
   },
@@ -46,6 +49,10 @@ export const authController = {
       console.error("REGISTER TENANT ERROR:", err); // ← add this
       if (err.message === "EMAIL_TAKEN")
         return res.status(409).json({ message: "Email already in use" });
+      if (err.message === "PHONE_TAKEN")
+        return res.status(409).json({ message: "Phone number already registered" });
+      if (err.message === "CLINIC_NAME_TAKEN")
+        return res.status(409).json({ message: "Clinic name already taken. Try a different name." });
       if (err.message === "PLAN_NOT_FOUND")
         return res.status(404).json({ message: "Plan not found" });
       return res.status(500).json({ message: "Internal server error" });

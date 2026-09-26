@@ -14,13 +14,23 @@ export const authService = {
     if (existing) throw new Error("EMAIL_TAKEN");
 
     const password_hash = await passwordUtil.hash(input.password);
-    const user = await authRepository.createPatient({
-      full_name: input.full_name,
-      email: input.email,
-      ...(input.phone !== undefined && { phone: input.phone }),
-      password_hash,
-    });
-    return user;
+    try {
+      const user = await authRepository.createPatient({
+        full_name: input.full_name,
+        email: input.email,
+        ...(input.phone !== undefined && { phone: input.phone }),
+        password_hash,
+      });
+      return user;
+    } catch (err: any) {
+      if (err.code === "23505") {
+        // unique constraint violation — figure out which field
+        const detail: string = err.detail ?? "";
+        if (detail.includes("phone")) throw new Error("PHONE_TAKEN");
+        if (detail.includes("email")) throw new Error("EMAIL_TAKEN");
+      }
+      throw err;
+    }
   },
 
   async registerTenant(input: RegisterTenantInput) {
@@ -34,17 +44,26 @@ export const authService = {
 
     const password_hash = await passwordUtil.hash(input.password);
 
-    const { tenant, user } = await authRepository.createTenantWithAdmin({
-      clinic_name: input.clinic_name,
-      clinic_phone: input.clinic_phone,
-      plan_id: plan.id,
-      full_name: input.full_name,
-      email: input.email,
-      ...(input.phone !== undefined && { phone: input.phone }),
-      password_hash,
-    });
-
-    return { tenant, user };
+    try {
+      const { tenant, user } = await authRepository.createTenantWithAdmin({
+        clinic_name: input.clinic_name,
+        clinic_phone: input.clinic_phone,
+        plan_id: plan.id,
+        full_name: input.full_name,
+        email: input.email,
+        ...(input.phone !== undefined && { phone: input.phone }),
+        password_hash,
+      });
+      return { tenant, user };
+    } catch (err: any) {
+      if (err.code === "23505") {
+        const detail: string = err.detail ?? "";
+        if (detail.includes("phone")) throw new Error("PHONE_TAKEN");
+        if (detail.includes("email")) throw new Error("EMAIL_TAKEN");
+        if (detail.includes("slug"))  throw new Error("CLINIC_NAME_TAKEN");
+      }
+      throw err;
+    }
   },
 
   async getMe(userId: string) {
@@ -71,6 +90,7 @@ export const authService = {
       email:       user.email,
       phone:       user.phone,
       role:        user.role,
+      tenant_id:   user.tenant_id,
       clinic_name: user.clinic_name,
       clinic_slug: user.clinic_slug,
       created_at:  user.created_at,
